@@ -1,3 +1,5 @@
+import os
+
 from playwright.sync_api import sync_playwright
 
 from scraper.extractor import BusinessExtractor
@@ -6,387 +8,238 @@ from services.enrichment import LeadEnricher
 
 def scrape_google_maps(keyword):
     """
-    Scrape Google Maps search results.
+    Scrape business information from Google Maps.
 
     Args:
-        keyword (str):
-            Example:
-            Dental Clinic Faridabad
+        keyword (str): Search keyword, e.g. Dental Clinic Faridabad.
 
     Returns:
-        list:
-            List of scraped business leads
+        list: Scraped business leads.
     """
 
     leads = []
+    browser = None
 
-    # ==========================================
-    # BUILD GOOGLE MAPS SEARCH URL
-    # ==========================================
-
-    search_keyword = keyword.replace(
-        " ",
-        "%20"
+    # Configure browser mode using an environment variable.
+    headless = (
+        os.getenv("PLAYWRIGHT_HEADLESS", "false").strip().lower()
+        == "true"
     )
 
-    url = (
-        f"https://www.google.com/maps/search/"
-        f"{search_keyword}"
-    )
+    # Build Google Maps search URL.
+    search_keyword = keyword.strip().replace(" ", "%20")
+    url = f"https://www.google.com/maps/search/{search_keyword}"
 
     print(f"\nOpening: {url}")
+    print(f"Browser mode: {'Headless' if headless else 'Visible'}")
 
-    with sync_playwright() as p:
-
-        browser = None
-
-        try:
-
-            # ==========================================
-            # START BROWSER
-            # ==========================================
-
-            browser = p.chromium.launch(
-                headless=False
-            )
-
-            page = browser.new_page()
-
-            # ==========================================
-            # OPEN GOOGLE MAPS WITH RETRY
-            # ==========================================
-
-            max_retries = 3
-
-            for attempt in range(
-                1,
-                max_retries + 1
-            ):
-
-                try:
-
-                    print(
-                        f"\nOpening Google Maps "
-                        f"(Attempt {attempt}/{max_retries})"
-                    )
-
-                    page.goto(
-                        url,
-                        wait_until="domcontentloaded",
-                        timeout=60000
-                    )
-
-                    print(
-                        "Google Maps loaded successfully."
-                    )
-
-                    break
-
-                except Exception as e:
-
-                    print(
-                        f"Google Maps loading failed: {e}"
-                    )
-
-                    if attempt == max_retries:
-
-                        print(
-                            "\n❌ Google Maps could not "
-                            "be loaded after 3 attempts."
-                        )
-
-                        return []
-
-                    print(
-                        "Retrying..."
-                    )
-
-            # ==========================================
-            # WAIT FOR PAGE
-            # ==========================================
-
-            page.wait_for_timeout(
-                5000
-            )
-
-            print(
-                page.title()
-            )
-
-            print(
-                page.url
-            )
-
-            # ==========================================
-            # SCROLL RESULTS
-            # ==========================================
-
-            for _ in range(5):
-
-                try:
-
-                    page.mouse.wheel(
-                        0,
-                        1000
-                    )
-
-                    page.wait_for_timeout(
-                        2000
-                    )
-
-                except Exception as e:
-
-                    print(
-                        f"Scroll error: {e}"
-                    )
-
-                    break
-
-            # ==========================================
-            # LOCATE BUSINESS CARDS
-            # ==========================================
-
-            clinics = page.locator(
-                'div[role="article"]'
-            )
+    try:
+        with sync_playwright() as p:
 
             try:
+                # ==========================================
+                # START BROWSER
+                # ==========================================
 
-                count = clinics.count()
-
-            except Exception as e:
-
-                print(
-                    f"\n❌ Could not read "
-                    f"Google Maps results: {e}"
+                browser = p.chromium.launch(
+                    headless=headless
                 )
 
-                return []
+                page = browser.new_page()
 
-            print(
-                f"\nTotal Results Found: {count}"
-            )
+                # ==========================================
+                # OPEN GOOGLE MAPS WITH RETRIES
+                # ==========================================
 
-            if count == 0:
+                max_retries = 3
+                page_loaded = False
 
-                print(
-                    "\n⚠️ No business results found."
-                )
-
-                return []
-
-            # ==========================================
-            # INITIALIZE EXTRACTOR
-            # ==========================================
-
-            extractor = BusinessExtractor(
-                page
-            )
-
-            # ==========================================
-            # INITIALIZE ENRICHER
-            # ==========================================
-
-            enricher = LeadEnricher(
-                page
-            )
-
-            # ==========================================
-            # PROCESS BUSINESS CARDS
-            # ==========================================
-
-            for i in range(
-                min(count, 10)
-            ):
-
-                try:
-
-                    print(
-                        f"\n========== "
-                        f"Business {i + 1} "
-                        f"=========="
-                    )
-
-                    # ----------------------------------
-                    # GET CARD
-                    # ----------------------------------
-
-                    clinic = clinics.nth(i)
-
-                    clinic.scroll_into_view_if_needed()
-
-                    page.wait_for_timeout(
-                        1000
-                    )
-
-                    # ----------------------------------
-                    # READ RAW CARD
-                    # ----------------------------------
-
-                    raw_text = clinic.inner_text()
-
-                    # ----------------------------------
-                    # CLICK BUSINESS
-                    # ----------------------------------
+                for attempt in range(1, max_retries + 1):
 
                     try:
-
-                        clinic.click()
-
-                        page.wait_for_timeout(
-                            3000
-                        )
-
-                    except Exception as click_error:
-
                         print(
-                            f"Could not click "
-                            f"business: "
-                            f"{click_error}"
+                            f"\nOpening Google Maps "
+                            f"(Attempt {attempt}/{max_retries})"
                         )
 
-                        continue
+                        page.goto(
+                            url,
+                            wait_until="domcontentloaded",
+                            timeout=60000
+                        )
 
-                    # ==================================
-                    # EXTRACT BUSINESS DETAILS
-                    # ==================================
+                        print("Google Maps loaded successfully.")
+                        page_loaded = True
+                        break
 
-                    details = (
-                        extractor.extract_details()
-                    )
+                    except Exception as e:
+                        print(f"Google Maps loading failed: {e}")
 
+                        if attempt < max_retries:
+                            print("Retrying...")
+
+                if not page_loaded:
                     print(
-                        "\n===== Extracted Details ====="
+                        "\nGoogle Maps could not be loaded "
+                        "after all retry attempts."
                     )
+                    return []
 
-                    print(
-                        details
-                    )
+                # ==========================================
+                # WAIT FOR PAGE
+                # ==========================================
 
-                    # ==================================
-                    # CREATE LEAD
-                    # ==================================
+                page.wait_for_timeout(5000)
 
-                    lead = details.copy()
+                print(f"Page title: {page.title()}")
+                print(f"Page URL: {page.url}")
 
-                    lead["text"] = raw_text
+                # ==========================================
+                # SCROLL RESULTS
+                # ==========================================
 
-                    # ==================================
-                    # ENRICH MISSING DATA
-                    # ==================================
+                for _ in range(5):
+                    try:
+                        page.mouse.wheel(0, 1000)
+                        page.wait_for_timeout(2000)
 
-                    print(
-                        "\n===== ENRICHMENT ====="
-                    )
+                    except Exception as e:
+                        print(f"Scroll error: {e}")
+                        break
 
-                    lead = enricher.enrich_lead(
-                        lead
-                    )
+                # ==========================================
+                # LOCATE BUSINESS CARDS
+                # ==========================================
 
-                    # ==================================
-                    # SHOW ENRICHED DATA
-                    # ==================================
-
-                    print(
-                        "\n===== Enriched Lead ====="
-                    )
-
-                    print(
-                        f"Business: "
-                        f"{lead.get('business_name')}"
-                    )
-
-                    print(
-                        f"Phone: "
-                        f"{lead.get('phone')}"
-                    )
-
-                    print(
-                        f"Website: "
-                        f"{lead.get('website')}"
-                    )
-
-                    print(
-                        f"Address: "
-                        f"{lead.get('address')}"
-                    )
-
-                    # ==================================
-                    # ADD TO RESULTS
-                    # ==================================
-
-                    leads.append(
-                        {
-                            "text": raw_text,
-                            "details": lead
-                        }
-                    )
-
-                    # ==================================
-                    # RAW CARD
-                    # ==================================
-
-                    print(
-                        "\n===== Raw Card ====="
-                    )
-
-                    print(
-                        raw_text
-                    )
-
-                except Exception as e:
-
-                    print(
-                        f"\n⚠️ Error processing "
-                        f"business {i + 1}: {e}"
-                    )
-
-                    print(
-                        "Skipping this business "
-                        "and continuing..."
-                    )
-
-            # ==========================================
-            # SCRAPING COMPLETE
-            # ==========================================
-
-            print(
-                f"\n✅ Scraping completed."
-            )
-
-            print(
-                f"Successfully processed: "
-                f"{len(leads)} businesses"
-            )
-
-            return leads
-
-        except Exception as e:
-
-            print(
-                f"\n❌ Scraper error: {e}"
-            )
-
-            return []
-
-        finally:
-
-            # ==========================================
-            # CLOSE BROWSER SAFELY
-            # ==========================================
-
-            if browser:
+                clinics = page.locator('div[role="article"]')
 
                 try:
-
-                    browser.close()
-
-                    print(
-                        "Browser closed."
-                    )
+                    count = clinics.count()
 
                 except Exception as e:
+                    print(f"Could not read Google Maps results: {e}")
+                    return []
+
+                print(f"\nTotal Results Found: {count}")
+
+                if count == 0:
+                    print(
+                        "\nNo business cards found. "
+                        "Google Maps may not have loaded the results."
+                    )
+                    return []
+
+                # ==========================================
+                # INITIALIZE EXTRACTOR AND ENRICHER
+                # ==========================================
+
+                extractor = BusinessExtractor(page)
+                enricher = LeadEnricher(page)
+
+                # ==========================================
+                # PROCESS BUSINESS CARDS
+                # ==========================================
+
+                for i in range(min(count, 10)):
 
                     print(
-                        f"Browser close error: {e}"
+                        f"\n========== Business {i + 1} =========="
                     )
+
+                    try:
+                        # Get the business card.
+                        clinic = clinics.nth(i)
+
+                        clinic.scroll_into_view_if_needed()
+                        page.wait_for_timeout(1000)
+
+                        # Read the original card text.
+                        raw_text = clinic.inner_text()
+
+                        # Open the business details.
+                        try:
+                            clinic.click()
+                            page.wait_for_timeout(3000)
+
+                        except Exception as e:
+                            print(f"Could not open business: {e}")
+                            continue
+
+                        # ==================================
+                        # EXTRACT BUSINESS DETAILS
+                        # ==================================
+
+                        details = extractor.extract_details()
+
+                        print("\n===== Extracted Details =====")
+                        print(details)
+
+                        # Create a lead from the extracted data.
+                        lead = details.copy()
+                        lead["text"] = raw_text
+
+                        # ==================================
+                        # ENRICH MISSING DATA
+                        # ==================================
+
+                        print("\n===== ENRICHMENT =====")
+
+                        lead = enricher.enrich_lead(lead)
+
+                        # ==================================
+                        # DISPLAY ENRICHED DATA
+                        # ==================================
+
+                        print("\n===== Enriched Lead =====")
+                        print(f"Business: {lead.get('business_name')}")
+                        print(f"Phone: {lead.get('phone')}")
+                        print(f"Website: {lead.get('website')}")
+                        print(f"Address: {lead.get('address')}")
+
+                        # ==================================
+                        # SAVE TO RESULTS LIST
+                        # ==================================
+
+                        leads.append(
+                            {
+                                "text": raw_text,
+                                "details": lead
+                            }
+                        )
+
+                        print("\n===== Raw Card =====")
+                        print(raw_text)
+
+                    except Exception as e:
+                        print(
+                            f"\nError processing business {i + 1}: {e}"
+                        )
+                        print("Skipping this business and continuing.")
+
+                # ==========================================
+                # SCRAPING COMPLETE
+                # ==========================================
+
+                print("\nScraping completed.")
+                print(
+                    f"Successfully processed: {len(leads)} businesses"
+                )
+
+                return leads
+
+            finally:
+                # ==========================================
+                # CLOSE BROWSER SAFELY
+                # ==========================================
+
+                if browser:
+                    try:
+                        browser.close()
+                        print("Browser closed.")
+
+                    except Exception as e:
+                        print(f"Browser close error: {e}")
+
+    except Exception as e:
+        print(f"\nScraper error: {e}")
+        return []

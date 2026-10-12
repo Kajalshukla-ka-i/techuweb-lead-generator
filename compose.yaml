@@ -1,0 +1,18 @@
+services:
+  lead-generator:
+    build: .
+    image: techuweb-lead-generator
+    container_name: techuweb-lead-generator
+
+    env_file:
+      - .env
+
+    environment:
+      PLAYWRIGHT_HEADLESS: "true"
+
+    volumes:
+      - ./output:/app/output
+      - ./logs:/app/logs
+
+    stdin_open: true
+    tty: true
