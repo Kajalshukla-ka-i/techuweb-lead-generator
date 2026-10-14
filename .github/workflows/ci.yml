@@ -1,0 +1,28 @@
+name: Techuweb Lead Generator CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  validate:
+    name: Validate Python and Docker
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Check Python syntax
+        run: |
+          python -m compileall -q app.py config database models scraper services utils
+
+      - name: Build Docker image
+        run: docker build -t techuweb-lead-generator:ci .
