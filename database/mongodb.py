@@ -4,6 +4,7 @@ from config.settings import (
     MONGODB_URI,
     DATABASE_NAME,
     COLLECTION_NAME,
+    validate_settings,
 )
 
 
@@ -11,9 +12,22 @@ class MongoDB:
 
     def __init__(self):
 
+        validate_settings()
+
         self.client = MongoClient(
-            MONGODB_URI
+            MONGODB_URI,
+            serverSelectionTimeoutMS=10000,
         )
+
+        try:
+            self.client.admin.command("ping")
+        except Exception:
+            self.client.close()
+            raise RuntimeError(
+                "Could not connect to MongoDB. "
+                "Check your connection string, network access, "
+                "and MongoDB Atlas configuration."
+            ) from None
 
         self.db = self.client[
             DATABASE_NAME
