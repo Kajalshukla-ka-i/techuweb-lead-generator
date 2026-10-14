@@ -8,7 +8,7 @@ on:
 
 jobs:
   validate:
-    name: Validate Python and Docker
+    name: Validate Python, Tests and Docker
     runs-on: ubuntu-latest
 
     steps:
@@ -18,11 +18,20 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.14'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
 
       - name: Check Python syntax
         run: |
-          python -m compileall -q app.py config database models scraper services utils
+          python -m compileall -q app.py config database models scraper services utils tests
+
+      - name: Run unit tests
+        run: |
+          python -m unittest discover -s tests -p 'test_*.py' -v
 
       - name: Build Docker image
         run: docker build -t techuweb-lead-generator:ci .
