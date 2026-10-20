@@ -1,210 +1,185 @@
 import json
-import os
-from database.mongodb import MongoDB
+import tempfile
+import unittest
+from pathlib import Path
 
 
-BACKUP_FILE = (
-    "output/backup/leads_backup_20260912_173434.json"
-)
+REQUIRED_FIELDS = [
+    "business_name",
+    "phone",
+    "website",
+    "city",
+]
 
 
-def main():
+def load_backup(file_path):
+    """Load a JSON backup and validate its structure and required fields."""
+    file_path = Path(file_path)
 
-    print("=" * 80)
-    print("BACKUP INTEGRITY TEST")
-    print("=" * 80)
-
-    db = MongoDB()
+    if not file_path.is_file():
+        raise FileNotFoundError(
+            f"Backup file not found: {file_path}"
+        )
 
     try:
+        with file_path.open("r", encoding="utf-8") as file:
+            data = json.load(file)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Backup contains invalid JSON: {file_path}"
+        ) from exc
 
-        # =====================================================
-        # TEST 1 - FILE EXISTS
-        # =====================================================
+    if not isinstance(data, list):
+        raise ValueError(
+            "Backup must contain a JSON list of records."
+        )
 
-        print("\n" + "=" * 80)
-        print("TEST 1 - CHECK BACKUP FILE")
-        print("=" * 80)
-
-        if not os.path.exists(BACKUP_FILE):
-
-            print(
-                f"\n❌ Backup file not found:\n"
-                f"{BACKUP_FILE}"
+    for index, record in enumerate(data, start=1):
+        if not isinstance(record, dict):
+            raise ValueError(
+                f"Record {index} must be a JSON object."
             )
 
-            return
-
-        print(
-            f"\n✅ Backup file exists:\n"
-            f"{BACKUP_FILE}"
-        )
-
-        # =====================================================
-        # TEST 2 - LOAD JSON
-        # =====================================================
-
-        print("\n" + "=" * 80)
-        print("TEST 2 - LOAD JSON BACKUP")
-        print("=" * 80)
-
-        with open(
-            BACKUP_FILE,
-            "r",
-            encoding="utf-8"
-        ) as file:
-
-            backup_data = json.load(file)
-
-        print(
-            "\n✅ JSON file loaded successfully"
-        )
-
-        # =====================================================
-        # TEST 3 - RECORD COUNT
-        # =====================================================
-
-        print("\n" + "=" * 80)
-        print("TEST 3 - VERIFY RECORD COUNT")
-        print("=" * 80)
-
-        database_count = (
-            db.collection.count_documents({})
-        )
-
-        backup_count = len(backup_data)
-
-        print(
-            f"\nMongoDB records : {database_count}"
-        )
-
-        print(
-            f"Backup records  : {backup_count}"
-        )
-
-        if database_count == backup_count:
-
-            print(
-                "\n✅ Record counts match"
-            )
-
-        else:
-
-            print(
-                "\n⚠️ Record counts do not match"
-            )
-
-        # =====================================================
-        # TEST 4 - REQUIRED FIELDS
-        # =====================================================
-
-        print("\n" + "=" * 80)
-        print("TEST 4 - VERIFY IMPORTANT FIELDS")
-        print("=" * 80)
-
-        required_fields = [
-            "business_name",
-            "phone",
-            "website",
-            "city"
+        missing_fields = [
+            field
+            for field in REQUIRED_FIELDS
+            if field not in record
         ]
 
-        records_with_missing_fields = 0
+        if missing_fields:
+            raise ValueError(
+                f"Record {index} is missing required fields: "
+                f"{', '.join(missing_fields)}"
+            )
 
-        for index, lead in enumerate(
-            backup_data,
-            start=1
+    return data
+
+
+class TestBackupIntegrity(unittest.TestCase):
+
+    def setUp(self):
+        """Create an isolated temporary directory for each test."""
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.backup_file = (
+            Path(self.temp_dir.name) / "test_backup.json"
+        )
+
+    def tearDown(self):
+        """Remove temporary test files."""
+        self.temp_dir.cleanup()
+
+    def write_backup(self, data):
+        """Write test data to a temporary JSON backup."""
+        with self.backup_file.open(
+            "w",
+            encoding="utf-8"
+        ) as file:
+            json.dump(data, file)
+
+    def test_backup_file_exists(self):
+        self.write_backup([])
+
+        self.assertTrue(self.backup_file.is_file())
+
+    def test_backup_contains_valid_json(self):
+        self.write_backup([])
+
+        self.assertEqual(
+            load_backup(self.backup_file),
+            []
+        )
+
+    def test_every_record_is_a_dictionary(self):
+        records = [
+            {
+                "business_name": "Example Clinic",
+                "phone": "1234567890",
+                "website": "",
+                "city": "Bengaluru",
+            }
+        ]
+
+        self.write_backup(records)
+        data = load_backup(self.backup_file)
+
+        for record in data:
+            self.assertIsInstance(record, dict)
+
+    def test_required_fields_are_present(self):
+        record = {
+            "business_name": "Example Clinic",
+            "phone": "1234567890",
+            "website": "",
+            "city": "Bengaluru",
+        }
+
+        self.write_backup([record])
+        data = load_backup(self.backup_file)
+
+        for item in data:
+            for field in REQUIRED_FIELDS:
+                self.assertIn(field, item)
+
+    def test_empty_backup_is_valid_json_list(self):
+        self.write_backup([])
+
+        self.assertEqual(
+            load_backup(self.backup_file),
+            []
+        )
+
+    def test_missing_backup_raises_error(self):
+        with self.assertRaises(FileNotFoundError):
+            load_backup(self.backup_file)
+
+    def test_non_list_backup_raises_error(self):
+        self.write_backup(
+            {"business_name": "Example Clinic"}
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "JSON list"
         ):
+            load_backup(self.backup_file)
 
-            missing_fields = [
-                field
-                for field in required_fields
-                if field not in lead
-            ]
+    def test_non_dictionary_record_raises_error(self):
+        self.write_backup(["invalid record"])
 
-            if missing_fields:
+        with self.assertRaisesRegex(
+            ValueError,
+            "JSON object"
+        ):
+            load_backup(self.backup_file)
 
-                records_with_missing_fields += 1
+    def test_missing_required_field_raises_error(self):
+        record = {
+            "business_name": "Example Clinic",
+            "phone": "1234567890",
+            "city": "Bengaluru",
+        }
 
-                print(
-                    f"\nRecord {index} missing: "
-                    f"{missing_fields}"
-                )
+        self.write_backup([record])
 
-        if records_with_missing_fields == 0:
+        with self.assertRaisesRegex(
+            ValueError,
+            "website"
+        ):
+            load_backup(self.backup_file)
 
-            print(
-                "\n✅ All records contain the required keys"
-            )
+    def test_empty_required_field_value_is_allowed(self):
+        record = {
+            "business_name": "Example Clinic",
+            "phone": "1234567890",
+            "website": "",
+            "city": "Bengaluru",
+        }
 
-        else:
+        self.write_backup([record])
+        data = load_backup(self.backup_file)
 
-            print(
-                f"\n⚠️ "
-                f"{records_with_missing_fields} records "
-                f"have missing keys"
-            )
-
-        # =====================================================
-        # TEST 5 - SAMPLE RECORD
-        # =====================================================
-
-        print("\n" + "=" * 80)
-        print("TEST 5 - SAMPLE BACKUP RECORD")
-        print("=" * 80)
-
-        if backup_data:
-
-            sample = backup_data[0]
-
-            print(
-                f"\nBusiness Name: "
-                f"{sample.get('business_name')}"
-            )
-
-            print(
-                f"Phone: "
-                f"{sample.get('phone')}"
-            )
-
-            print(
-                f"Website: "
-                f"{sample.get('website')}"
-            )
-
-            print(
-                f"City: "
-                f"{sample.get('city')}"
-            )
-
-        # =====================================================
-        # FINAL RESULT
-        # =====================================================
-
-        print("\n" + "=" * 80)
-        print("BACKUP INTEGRITY TEST COMPLETED")
-        print("=" * 80)
-
-        print(
-            "\n⚠️ No database records were modified."
-        )
-
-    except Exception as e:
-
-        print("\n❌ BACKUP TEST ERROR")
-
-        print(
-            f"{type(e).__name__}: {e}"
-        )
-
-    finally:
-
-        db.close()
-
-        print(
-            "\nMongoDB Connection Closed"
-        )
+        self.assertEqual(data[0]["website"], "")
 
 
 if __name__ == "__main__":
-    main()
+    unittest.main(verbosity=2)

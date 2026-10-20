@@ -9,9 +9,64 @@ from config.settings import (
 
 
 class MongoDB:
+    """
+    MongoDB operations for TECHUWEB Lead Generator.
+
+    Responsibilities:
+    - Connect to MongoDB.
+    - Create non-unique indexes.
+    - Normalize business names and phone numbers.
+    - Find existing leads.
+    - Merge useful business information safely.
+    - Preserve existing CRM-managed fields.
+    - Save new leads and update incomplete records.
+
+    This module does not automatically delete or merge
+    separate database records.
+    """
+
+    CRM_MANAGED_FIELDS = {
+        "status",
+        "assigned_to",
+        "notes",
+    }
+
+    BUSINESS_DATA_FIELDS = [
+        "business_name",
+        "category",
+        "rating",
+        "reviews",
+        "phone",
+        "website",
+        "address",
+        "email",
+        "maps_url",
+        "data_status",
+        "missing_fields",
+        "valid_phone",
+        "lead_score",
+        "opportunity",
+        "source",
+        "city",
+        "state",
+        "keyword",
+    ]
+
+    IMPROVEMENT_FIELDS = [
+        "phone",
+        "website",
+        "address",
+        "email",
+        "reviews",
+        "rating",
+        "category",
+    ]
+
+    # ==================================================
+    # INITIALIZE CONNECTION
+    # ==================================================
 
     def __init__(self):
-
         validate_settings()
 
         self.client = MongoClient(
@@ -21,299 +76,311 @@ class MongoDB:
 
         try:
             self.client.admin.command("ping")
+
+            self.db = self.client[DATABASE_NAME]
+
+            self.collection = self.db[COLLECTION_NAME]
+
+            self.create_indexes()
+
         except Exception:
             self.client.close()
+
             raise RuntimeError(
-                "Could not connect to MongoDB. "
+                "Could not initialize MongoDB. "
                 "Check your connection string, network access, "
-                "and MongoDB Atlas configuration."
+                "database permissions, and Atlas configuration."
             ) from None
-
-        self.db = self.client[
-            DATABASE_NAME
-        ]
-
-        self.collection = self.db[
-            COLLECTION_NAME
-        ]
-
-        self.create_indexes()
 
     # ==================================================
     # CREATE INDEXES
     # ==================================================
 
     def create_indexes(self):
+        """
+        Create non-unique indexes for common lookups.
 
-        self.collection.create_index(
-            "phone"
-        )
+        These indexes improve query performance but do not
+        guarantee uniqueness.
+        """
 
-        self.collection.create_index(
-            "business_name"
-        )
+        fields = [
+            "phone",
+            "business_name",
+            "city",
+            "category",
+            "status",
+            "keyword",
+            "maps_url",
+        ]
 
-        self.collection.create_index(
-            "city"
-        )
-
-        self.collection.create_index(
-            "category"
-        )
-
-        self.collection.create_index(
-            "status"
-        )
-
-        self.collection.create_index(
-            "keyword"
-        )
-
-        self.collection.create_index(
-            "maps_url"
-        )
+        for field in fields:
+            self.collection.create_index(field)
 
     # ==================================================
     # NORMALIZE PHONE
     # ==================================================
 
-    def normalize_phone(self, phone):
+    @staticmethod
+    def normalize_phone(phone):
+        """
+        Normalize phone numbers for comparison.
 
-        if not phone:
+        Example:
+            '+91 98765-43210' -> '9876543210'
+
+        The leading Indian country code is removed only
+        when the normalized number contains 12 digits
+        beginning with 91.
+        """
+
+        if phone is None or isinstance(phone, bool):
             return ""
 
-        phone = (
-            str(phone)
-            .replace(" ", "")
-            .replace("-", "")
-            .replace("(", "")
-            .replace(")", "")
+        digits = "".join(
+            character
+            for character in str(phone)
+            if character.isdigit()
         )
 
-        if phone.startswith("+91"):
-            phone = phone[3:]
+        if len(digits) == 12 and digits.startswith("91"):
+            digits = digits[2:]
 
-        return phone
+        return digits
 
     # ==================================================
     # NORMALIZE BUSINESS NAME
     # ==================================================
 
-    def normalize_business_name(
-        self,
-        business_name
-    ):
+    @staticmethod
+    def normalize_business_name(business_name):
+        """
+        Normalize a business name for comparison.
 
-        if not business_name:
+        Example:
+            ' ABC Clinic, Bengaluru '
+            -> 'abc clinic bengaluru'
+        """
+
+        if business_name is None or isinstance(
+            business_name,
+            bool,
+        ):
             return ""
 
-        name = str(
-            business_name
-        ).lower()
+        name = str(business_name).lower()
 
         name = "".join(
-            char
-            if char.isalnum()
-            else " "
-            for char in name
+            character if character.isalnum() else " "
+            for character in name
         )
 
-        name = " ".join(
-            name.split()
-        )
+        return " ".join(name.split())
 
-        return name
+    # ==================================================
+    # NORMALIZE GENERAL TEXT
+    # ==================================================
+
+    @staticmethod
+    def normalize_text(value):
+        """Normalize text for comparison."""
+
+        if value is None or isinstance(value, bool):
+            return ""
+
+        return " ".join(str(value).strip().lower().split())
 
     # ==================================================
     # FIND EXISTING LEAD
     # ==================================================
 
-    def find_existing_lead(
-        self,
-        lead
-    ):
+    def find_existing_lead(self, lead):
+        """
+        Find an existing lead using these checks:
 
-        business_name = lead.get(
-            "business_name"
+        1. Exact Google Maps URL.
+        2. Normalized phone + business name + city.
+        3. Normalized business name + city.
+
+        A phone number alone is not sufficient to identify a business.
+        """
+
+        maps_url = lead.get("maps_url")
+
+        business_name = self.normalize_business_name(
+            lead.get("business_name")
         )
 
-        city = lead.get(
-            "city"
-        )
+        city = self.normalize_text(lead.get("city"))
 
-        phone = self.normalize_phone(
-            lead.get("phone")
-        )
+        phone = self.normalize_phone(lead.get("phone"))
 
-        maps_url = lead.get(
-            "maps_url"
-        )
-
-        # ==================================================
+        # ----------------------------------------------
         # LEVEL 1: GOOGLE MAPS URL
-        # ==================================================
+        # ----------------------------------------------
 
         if maps_url:
-
             existing = self.collection.find_one(
-                {
-                    "maps_url": maps_url
-                }
+                {"maps_url": maps_url}
             )
 
             if existing:
                 return existing
 
-        # ==================================================
-        # LEVEL 2: PHONE
-        # ==================================================
+        # ----------------------------------------------
+        # LEVEL 2: PHONE + BUSINESS IDENTITY
+        # ----------------------------------------------
 
-        if phone:
-
+        if phone and business_name and city:
             existing_leads = self.collection.find(
                 {
-                    "phone": phone
+                    "phone": {
+                        "$exists": True,
+                        "$nin": ["", None],
+                    }
                 }
             )
 
             for existing in existing_leads:
-
                 existing_phone = self.normalize_phone(
                     existing.get("phone")
                 )
 
-                if existing_phone == phone:
+                existing_name = self.normalize_business_name(
+                    existing.get("business_name")
+                )
 
+                existing_city = self.normalize_text(
+                    existing.get("city")
+                )
+
+                if (
+                    existing_phone == phone
+                    and existing_name == business_name
+                    and existing_city == city
+                ):
                     return existing
 
-        # ==================================================
+        # ----------------------------------------------
         # LEVEL 3: BUSINESS NAME + CITY
-        # ==================================================
+        # ----------------------------------------------
 
         if business_name and city:
-
-            normalized_name = (
-                self.normalize_business_name(
-                    business_name
-                )
-            )
-
             existing_leads = self.collection.find(
                 {
-                    "city": city
+                    "city": {
+                        "$exists": True,
+                        "$nin": ["", None],
+                    }
                 }
             )
 
             for existing in existing_leads:
+                existing_name = self.normalize_business_name(
+                    existing.get("business_name")
+                )
 
-                existing_name = (
-                    self.normalize_business_name(
-                        existing.get(
-                            "business_name"
-                        )
-                    )
+                existing_city = self.normalize_text(
+                    existing.get("city")
                 )
 
                 if (
-                    normalized_name
-                    and
-                    normalized_name == existing_name
+                    existing_name == business_name
+                    and existing_city == city
                 ):
-
                     return existing
 
         return None
 
     # ==================================================
-    # CHECK WHETHER NEW DATA IS BETTER
+    # CHECK WHETHER NEW DATA IMPROVES EXISTING DATA
     # ==================================================
 
-    def has_better_data(
-        self,
-        existing,
-        new_lead
-    ):
+    def has_better_data(self, existing, new_lead):
+        """
+        Return True if the incoming lead fills at least
+        one missing business-data field.
 
-        fields = [
-            "phone",
-            "website",
-            "address",
-            "email",
-            "reviews",
-            "rating",
-            "category",
-        ]
+        Existing non-empty values are not considered missing.
+        """
 
-        for field in fields:
-
-            old_value = existing.get(
-                field
-            )
-
-            new_value = new_lead.get(
-                field
-            )
+        for field in self.IMPROVEMENT_FIELDS:
+            old_value = existing.get(field)
+            new_value = new_lead.get(field)
 
             if (
-                not old_value
-                and new_value
+                not self._has_value(old_value)
+                and self._has_value(new_value)
             ):
-
                 return True
 
         return False
 
     # ==================================================
+    # CHECK WHETHER A VALUE EXISTS
+    # ==================================================
+
+    @staticmethod
+    def _has_value(value):
+        """Treat None, False, empty strings and empty lists as empty."""
+
+        if value is None or isinstance(value, bool):
+            return False
+
+        if isinstance(value, str):
+            return bool(value.strip())
+
+        if isinstance(value, (list, tuple, dict, set)):
+            return bool(value)
+
+        return True
+
+    # ==================================================
     # MERGE LEAD DATA
     # ==================================================
 
-    def merge_leads(
-        self,
-        existing,
-        new_lead
-    ):
+    def merge_leads(self, existing, new_lead):
+        """
+        Merge incoming business data into an existing lead.
 
-        merged = existing.copy()
+        Safety rules:
+        - Existing CRM status is preserved.
+        - Existing assignee is preserved.
+        - Existing notes are preserved.
+        - Missing CRM values can be initialized from
+          incoming data.
+        - Existing _id is excluded from the update payload.
+        - Existing business values are retained when incoming
+          values are empty.
+        """
 
-        fields = [
-            "business_name",
-            "category",
-            "rating",
-            "reviews",
-            "phone",
-            "website",
-            "address",
-            "email",
-            "maps_url",
-            "data_status",
-            "missing_fields",
-            "valid_phone",
-            "lead_score",
-            "opportunity",
-            "source",
-            "city",
-            "state",
-            "keyword",
-            "status",
-            "assigned_to",
-            "notes",
-        ]
+        # Never include MongoDB's immutable _id in a $set update.
+        merged = {
+            key: value
+            for key, value in existing.items()
+            if key != "_id"
+        }
 
-        for field in fields:
+        for field in self.BUSINESS_DATA_FIELDS:
+            old_value = existing.get(field)
+            new_value = new_lead.get(field)
 
-            new_value = new_lead.get(
-                field
-            )
-
-            old_value = existing.get(
-                field
-            )
-
-            if new_value:
+            if self._has_value(new_value):
                 merged[field] = new_value
 
-            elif old_value:
+            elif self._has_value(old_value):
                 merged[field] = old_value
+
+        # Preserve existing CRM-managed values.
+        for field in self.CRM_MANAGED_FIELDS:
+            old_value = existing.get(field)
+            new_value = new_lead.get(field)
+
+            if self._has_value(old_value):
+                merged[field] = old_value
+
+            elif self._has_value(new_value):
+                merged[field] = new_value
 
         return merged
 
@@ -321,176 +388,181 @@ class MongoDB:
     # SAVE LEADS
     # ==================================================
 
-    def save_leads(
-        self,
-        leads
-    ):
+    def save_leads(self, leads):
+        """
+        Save new leads and improve existing records.
+
+        Existing leads are updated only when an incoming
+        business-data field fills a missing value.
+
+        This method does not delete database records.
+        """
 
         new_count = 0
-        duplicate_count = 0
         updated_count = 0
+        duplicate_count = 0
+        skipped_count = 0
 
         operations = []
 
         for lead in leads:
+            business_name = lead.get("business_name")
+            maps_url = lead.get("maps_url")
+            city = lead.get("city")
 
-            business_name = lead.get(
-                "business_name"
-            )
+            # ------------------------------------------
+            # VALIDATE LEAD IDENTITY
+            # ------------------------------------------
 
-            # ==================================================
-            # FIND EXISTING LEAD
-            # ==================================================
-
-            existing_lead = (
-                self.find_existing_lead(
-                    lead
+            if not self._has_value(business_name):
+                print(
+                    "Lead skipped: missing business name."
                 )
-            )
 
-            # ==================================================
+                skipped_count += 1
+                continue
+
+            # ------------------------------------------
+            # FIND EXISTING LEAD
+            # ------------------------------------------
+
+            existing_lead = self.find_existing_lead(lead)
+
+            # ------------------------------------------
             # NEW LEAD
-            # ==================================================
+            # ------------------------------------------
 
             if not existing_lead:
 
-                # ----------------------------------------------
-                # MAPS URL AVAILABLE
-                # ----------------------------------------------
+                if self._has_value(maps_url):
+                    identity_filter = {
+                        "maps_url": maps_url
+                    }
 
-                if lead.get("maps_url"):
-
-                    operations.append(
-                        UpdateOne(
-                            {
-                                "maps_url":
-                                    lead.get(
-                                        "maps_url"
-                                    )
-                            },
-                            {
-                                "$set":
-                                    lead
-                            },
-                            upsert=True
-                        )
-                    )
-
-                # ----------------------------------------------
-                # NO MAPS URL
-                # ----------------------------------------------
+                elif (
+                    self._has_value(business_name)
+                    and self._has_value(city)
+                ):
+                    identity_filter = {
+                        "business_name": business_name,
+                        "city": city,
+                    }
 
                 else:
-
-                    operations.append(
-                        UpdateOne(
-                            {
-                                "business_name":
-                                    lead.get(
-                                        "business_name"
-                                    ),
-                                "city":
-                                    lead.get(
-                                        "city"
-                                    )
-                            },
-                            {
-                                "$set":
-                                    lead
-                            },
-                            upsert=True
-                        )
+                    print(
+                        f"Lead skipped: insufficient identity "
+                        f"information for {business_name}."
                     )
+
+                    skipped_count += 1
+                    continue
+
+                new_document = {
+                    key: value
+                    for key, value in lead.items()
+                    if key != "_id"
+                }
+
+                new_document.setdefault("status", "NEW")
+
+                operations.append(
+                    UpdateOne(
+                        identity_filter,
+                        {
+                            "$setOnInsert": new_document
+                        },
+                        upsert=True,
+                    )
+                )
 
                 new_count += 1
 
-                print(
-                    f"New lead: {business_name}"
-                )
+                print(f"New lead queued: {business_name}")
 
                 continue
 
-            # ==================================================
+            # ------------------------------------------
             # EXISTING LEAD
-            # ==================================================
+            # ------------------------------------------
 
-            if self.has_better_data(
-                existing_lead,
-                lead
-            ):
-
-                merged_lead = (
-                    self.merge_leads(
-                        existing_lead,
-                        lead
-                    )
+            if self.has_better_data(existing_lead, lead):
+                merged_lead = self.merge_leads(
+                    existing_lead,
+                    lead,
                 )
 
                 operations.append(
                     UpdateOne(
                         {
-                            "_id":
-                                existing_lead[
-                                    "_id"
-                                ]
+                            "_id": existing_lead["_id"]
                         },
                         {
-                            "$set":
-                                merged_lead
-                        }
+                            "$set": merged_lead
+                        },
                     )
                 )
 
                 updated_count += 1
 
-                print(
-                    f"Lead updated: {business_name}"
-                )
-
-            # ==================================================
-            # DUPLICATE
-            # ==================================================
+                print(f"Lead update queued: {business_name}")
 
             else:
-
                 duplicate_count += 1
 
                 print(
-                    f"Duplicate skipped: "
-                    f"{business_name}"
+                    f"Duplicate skipped: {business_name}"
                 )
 
-        # ==================================================
+        # ----------------------------------------------
         # EXECUTE OPERATIONS
-        # ==================================================
+        # ----------------------------------------------
 
         if operations:
-
-            self.collection.bulk_write(
-                operations
+            result = self.collection.bulk_write(
+                operations,
+                ordered=False,
             )
 
-        # ==================================================
-        # RESULT
-        # ==================================================
+            print("\nMongoDB write completed.")
 
-        print(
-            f"{new_count} new leads saved to MongoDB"
-        )
+            print(
+                f"Matched records: {result.matched_count}"
+            )
 
-        print(
-            f"{updated_count} leads updated"
-        )
+            print(
+                f"Modified records: {result.modified_count}"
+            )
 
-        print(
-            f"{duplicate_count} duplicate leads skipped"
-        )
+            print(
+                f"Upserted records: {len(result.upserted_ids)}"
+            )
+
+        # ----------------------------------------------
+        # SUMMARY
+        # ----------------------------------------------
+
+        print("\n" + "=" * 50)
+        print("TECHUWEB LEAD SAVE SUMMARY")
+        print("=" * 50)
+
+        print(f"New leads queued: {new_count}")
+        print(f"Existing leads queued for update: {updated_count}")
+        print(f"Duplicates skipped: {duplicate_count}")
+        print(f"Invalid leads skipped: {skipped_count}")
+
+        return {
+            "new": new_count,
+            "updated": updated_count,
+            "duplicates": duplicate_count,
+            "skipped": skipped_count,
+        }
 
     # ==================================================
     # GET ALL LEADS
     # ==================================================
 
     def get_all(self):
+        """Return all leads as a list."""
 
         return list(
             self.collection.find()
@@ -501,5 +573,7 @@ class MongoDB:
     # ==================================================
 
     def close(self):
+        """Close the MongoDB client connection."""
 
-        self.client.close()
+        if getattr(self, "client", None):
+            self.client.close()
