@@ -365,11 +365,8 @@ class MongoDB:
             old_value = existing.get(field)
             new_value = new_lead.get(field)
 
-            if self._has_value(new_value):
+            if not self._has_value(old_value) and self._has_value(new_value):
                 merged[field] = new_value
-
-            elif self._has_value(old_value):
-                merged[field] = old_value
 
         # Preserve existing CRM-managed values.
         for field in self.CRM_MANAGED_FIELDS:

@@ -130,6 +130,33 @@ class TestMongoDBMergeSafety(unittest.TestCase):
 
         self.assertEqual(merged["notes"], "Call again next week")
 
+    def test_merge_preserves_existing_business_data_and_fills_missing_fields(self):
+        existing = {
+            "business_name": "Example Clinic",
+            "city": "Bengaluru",
+            "phone": "9876543210",
+            "website": "",
+        }
+        new_lead = {
+            "business_name": "Example Clinic",
+            "city": "Bengaluru",
+            "phone": "9999999999",
+            "website": "https://example.com",
+        }
+
+        merged = self.db.merge_leads(existing, new_lead)
+
+        self.assertEqual(
+            merged["phone"],
+            "9876543210",
+            "An existing populated phone number must not be overwritten.",
+        )
+        self.assertEqual(
+            merged["website"],
+            "https://example.com",
+            "A missing website should be filled from incoming data.",
+        )
+
     def test_merge_does_not_include_mongodb_id(self):
         existing = {
             "_id": "fake-id",
