@@ -194,6 +194,36 @@ class MongoDB:
     # FIND EXISTING LEAD
     # ==================================================
 
+    def _has_identity_conflict(self, existing, lead):
+        """
+        Detect a likely identity conflict using business name, city,
+        and phone. At least two populated identity fields must disagree.
+        """
+        comparisons = [
+            (
+                self.normalize_business_name(existing.get("business_name")),
+                self.normalize_business_name(lead.get("business_name")),
+            ),
+            (
+                self.normalize_text(existing.get("city")),
+                self.normalize_text(lead.get("city")),
+            ),
+            (
+                self.normalize_phone(existing.get("phone")),
+                self.normalize_phone(lead.get("phone")),
+            ),
+        ]
+
+        conflicts = sum(
+            1
+            for existing_value, incoming_value in comparisons
+            if existing_value
+            and incoming_value
+            and existing_value != incoming_value
+        )
+
+        return conflicts >= 2
+
     def find_existing_lead(self, lead):
         """
         Find an existing lead using these checks:
@@ -225,6 +255,9 @@ class MongoDB:
             )
 
             if existing:
+                if self._has_identity_conflict(existing, lead):
+                    return None
+
                 return existing
 
         # ----------------------------------------------
@@ -418,6 +451,26 @@ class MongoDB:
 
                 skipped_count += 1
                 continue
+
+            # ------------------------------------------
+            # CHECK FOR MAPS URL IDENTITY CONFLICT
+            # ------------------------------------------
+
+            if self._has_value(maps_url):
+                url_match = self.collection.find_one(
+                    {"maps_url": maps_url}
+                )
+
+                if (
+                    url_match
+                    and self._has_identity_conflict(url_match, lead)
+                ):
+                    print(
+                        f"Lead skipped: Maps URL identity conflict "
+                        f"for {business_name}."
+                    )
+                    skipped_count += 1
+                    continue
 
             # ------------------------------------------
             # FIND EXISTING LEAD

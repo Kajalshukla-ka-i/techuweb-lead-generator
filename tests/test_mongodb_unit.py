@@ -290,6 +290,57 @@ class TestMongoDBMergeSafety(unittest.TestCase):
         self.assertNotIn("_id", update_document)
 
     # ---------------------------------------------------------
+    # Google Maps URL identity safety
+    # ---------------------------------------------------------
+
+    def test_conflicting_business_identity_on_same_maps_url_is_not_matched(self):
+        existing = {
+            "_id": "existing-id",
+            "business_name": "Example Dental Clinic",
+            "city": "Bengaluru",
+            "maps_url": "https://maps.example/clinic-1",
+            "phone": "9876543210",
+        }
+        self.db.collection = FakeCollection(existing=existing)
+
+        incoming_lead = {
+            "business_name": "Completely Different Hospital",
+            "city": "Mysuru",
+            "maps_url": "https://maps.example/clinic-1",
+            "phone": "9123456780",
+        }
+
+        result = self.db.find_existing_lead(incoming_lead)
+
+        self.assertIsNone(
+            result,
+            "Conflicting business identities must not be matched by Maps URL alone.",
+        )
+
+    def test_save_skips_conflicting_business_on_same_maps_url(self):
+        existing = {
+            "_id": "existing-id",
+            "business_name": "Example Dental Clinic",
+            "city": "Bengaluru",
+            "maps_url": "https://maps.example/clinic-1",
+            "phone": "9876543210",
+        }
+        self.db.collection = FakeCollection(existing=existing)
+
+        incoming_lead = {
+            "business_name": "Completely Different Hospital",
+            "city": "Mysuru",
+            "maps_url": "https://maps.example/clinic-1",
+            "phone": "9123456780",
+        }
+
+        result = self.save_with_fakes([incoming_lead])
+
+        self.assertEqual(result["skipped"], 1)
+        self.assertFalse(self.db.collection.bulk_write_called)
+        self.assertEqual(len(self.db.collection.operations), 0)
+
+    # ---------------------------------------------------------
     # Duplicate-write prevention
     # ---------------------------------------------------------
 
